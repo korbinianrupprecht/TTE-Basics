@@ -622,16 +622,45 @@
 
   <script>
     // ══════════════════════════════════════════════
-    //  CONFIGURATION – change password here
+    //  KONFIGURATION
     // ══════════════════════════════════════════════
-    const EDITOR_PASSWORD = 'TTE2026';   // ← Ihr Passwort
+    const EDITOR_PASSWORD  = 'TTE2026';
+    const SUPABASE_URL     = 'https://typpgehlrujbdcogvcso.supabase.co';
+    const SUPABASE_ANON    = 'sb_publishable_c19cUY5-3p5MMI7-5CA7fw_Uhmc8pDd';
+    const TABLE            = 'tte_data';
+    const ROW_ID           = 'singleton';
 
-    // Storage keys
-    const KEY_DATE   = 'tte_date';
-    const KEY_NAMES  = 'tte_names';
+    // ── Supabase REST-Hilfsfunktionen ──────────────
+    async function dbLoad() {
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/${TABLE}?id=eq.${ROW_ID}&select=names,date`,
+        { headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${SUPABASE_ANON}` } }
+      );
+      if (!res.ok) throw new Error('Laden fehlgeschlagen');
+      const rows = await res.json();
+      return rows[0] || { names: [], date: '' };
+    }
 
-    // ── Restore persisted data on load ──
-    const dateDisplay = document.getElementById('dateDisplay');
+    async function dbSave(patch) {
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/${TABLE}?id=eq.${ROW_ID}`,
+        {
+          method: 'PATCH',
+          headers: {
+            apikey: SUPABASE_ANON,
+            Authorization: `Bearer ${SUPABASE_ANON}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal'
+          },
+          body: JSON.stringify(patch)
+        }
+      );
+      if (!res.ok) throw new Error('Speichern fehlgeschlagen');
+    }
+
+    // ── DOM-Referenzen ─────────────────────────────
+    const dateDisplay  = document.getElementById('dateDisplay');
+    const nameInputs   = document.querySelectorAll('table input[type=text]');
 
     function formatDate(isoVal) {
       if (!isoVal) return null;
@@ -640,37 +669,57 @@
       return d.toLocaleDateString('de-DE', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
     }
 
-    // Restore date
-    const savedDate = localStorage.getItem(KEY_DATE);
-    if (savedDate) {
-      dateDisplay.textContent = formatDate(savedDate) || 'Kein Datum gesetzt';
+    // ── Daten beim Laden abrufen ───────────────────
+    let saveTimer = null;
+
+    async function loadFromServer() {
+      try {
+        const data = await dbLoad();
+        // Datum
+        if (data.date) {
+          dateDisplay.textContent = formatDate(data.date) || 'Kein Datum gesetzt';
+        }
+        // Namen
+        const names = Array.isArray(data.names) ? data.names : [];
+        nameInputs.forEach((input, i) => {
+          input.value = names[i] || '';
+        });
+      } catch (e) {
+        console.error('Fehler beim Laden:', e);
+      }
     }
 
-    // Restore names
-    const nameInputs = document.querySelectorAll('table input[type=text]');
-    const savedNames = JSON.parse(localStorage.getItem(KEY_NAMES) || '[]');
-    nameInputs.forEach((input, i) => {
-      if (savedNames[i]) input.value = savedNames[i];
-      // Save on each change
-      input.addEventListener('input', saveNames);
+    loadFromServer();
+
+    // ── Namen automatisch speichern (debounced) ────
+    function scheduleNameSave() {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(async () => {
+        const vals = Array.from(nameInputs).map(i => i.value);
+        try {
+          await dbSave({ names: vals });
+        } catch (e) {
+          console.error('Fehler beim Speichern:', e);
+        }
+      }, 800); // 800 ms nach letzter Eingabe
+    }
+
+    nameInputs.forEach(input => {
+      input.addEventListener('input', scheduleNameSave);
     });
 
-    function saveNames() {
-      const vals = Array.from(nameInputs).map(i => i.value);
-      localStorage.setItem(KEY_NAMES, JSON.stringify(vals));
-    }
+    // ── Modal-Logik ────────────────────────────────
+    const overlay        = document.getElementById('modalOverlay');
+    const modalDesc      = document.getElementById('modalDesc');
+    const modalPwInput   = document.getElementById('modalPwInput');
+    const modalError     = document.getElementById('modalError');
+    const modalDateWrap  = document.getElementById('modalDateWrap');
+    const modalDateInput = document.getElementById('modalDateInput');
+    const cancelBtn      = document.getElementById('modalCancelBtn');
+    const confirmBtn     = document.getElementById('modalConfirmBtn');
 
-    // ── Modal logic ──
-    const overlay       = document.getElementById('modalOverlay');
-    const modalDesc     = document.getElementById('modalDesc');
-    const modalPwInput  = document.getElementById('modalPwInput');
-    const modalError    = document.getElementById('modalError');
-    const modalDateWrap = document.getElementById('modalDateWrap');
-    const modalDateInput= document.getElementById('modalDateInput');
-    const cancelBtn     = document.getElementById('modalCancelBtn');
-    const confirmBtn    = document.getElementById('modalConfirmBtn');
-
-    let pendingAction = null; // 'date' | 'clear'
+    let pendingAction    = null; // 'date' | 'clear'
+    let currentIsoDate   = '';   // merkt sich das aktuell gespeicherte Datum
 
     function openModal(action) {
       pendingAction = action;
@@ -679,7 +728,7 @@
       if (action === 'date') {
         modalDesc.textContent = 'Geben Sie das Editor-Passwort ein, um das Datum zu ändern.';
         modalDateWrap.style.display = 'block';
-        modalDateInput.value = localStorage.getItem(KEY_DATE) || '';
+        modalDateInput.value = currentIsoDate;
       } else {
         modalDesc.textContent = 'Geben Sie das Editor-Passwort ein, um die Teilnehmerliste zu leeren.';
         modalDateWrap.style.display = 'none';
@@ -693,7 +742,7 @@
       pendingAction = null;
     }
 
-    function handleConfirm() {
+    async function handleConfirm() {
       const pw = modalPwInput.value;
       if (pw !== EDITOR_PASSWORD) {
         modalError.textContent = 'Falsches Passwort. Bitte erneut versuchen.';
@@ -701,33 +750,43 @@
         modalPwInput.focus();
         return;
       }
-      // Correct password
-      if (pendingAction === 'date') {
-        const newDate = modalDateInput.value;
-        if (newDate) {
-          localStorage.setItem(KEY_DATE, newDate);
-          dateDisplay.textContent = formatDate(newDate);
-        } else {
-          localStorage.removeItem(KEY_DATE);
-          dateDisplay.textContent = 'Kein Datum gesetzt';
+
+      confirmBtn.disabled = true;
+      confirmBtn.textContent = 'Speichern…';
+
+      try {
+        if (pendingAction === 'date') {
+          const newDate = modalDateInput.value;
+          await dbSave({ date: newDate });
+          currentIsoDate = newDate;
+          dateDisplay.textContent = newDate ? formatDate(newDate) : 'Kein Datum gesetzt';
+        } else if (pendingAction === 'clear') {
+          await dbSave({ names: [] });
+          nameInputs.forEach(i => i.value = '');
         }
-      } else if (pendingAction === 'clear') {
-        nameInputs.forEach(i => i.value = '');
-        localStorage.setItem(KEY_NAMES, JSON.stringify([]));
+        closeModal();
+      } catch (e) {
+        modalError.textContent = 'Serverfehler – bitte erneut versuchen.';
+      } finally {
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = 'Bestätigen';
       }
-      closeModal();
     }
 
-    // Button wiring
+    // Beim Laden auch das ISO-Datum für den Modal merken
+    (async () => {
+      try {
+        const data = await dbLoad();
+        currentIsoDate = data.date || '';
+      } catch (_) {}
+    })();
+
+    // Button-Verdrahtung
     document.getElementById('dateEditBtn').addEventListener('click', () => openModal('date'));
     document.getElementById('clearBtn').addEventListener('click', () => openModal('clear'));
     cancelBtn.addEventListener('click', closeModal);
     confirmBtn.addEventListener('click', handleConfirm);
-
-    // Allow Enter key in password field
     modalPwInput.addEventListener('keydown', e => { if (e.key === 'Enter') handleConfirm(); });
-
-    // Close on overlay click
     overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
   </script>
 </body>
